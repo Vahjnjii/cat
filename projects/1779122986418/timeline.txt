@@ -1,8 +1,0 @@
-file 'images/image_0.jpg'
-duration 2.2233707865168544
-file 'images/image_1.jpg'
-duration 2.2233707865168544
-file 'images/image_2.jpg'
-duration 4.1851685393258435
-file 'images/image_3.jpg'
-duration 5

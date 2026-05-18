@@ -1067,6 +1067,8 @@ jobs:
     };
   };
 
+  const [sourceNodeRefState, setSourceNodeRefState] = useState<any>(null); // just to track maybe? No we use ref
+  
   const handlePlay = async () => {
     if (!audioRef.current) return;
     try {
@@ -1083,11 +1085,14 @@ jobs:
           sourceNodeRef.current = audioContextRef.current.createMediaElementSource(audioRef.current);
           sourceNodeRef.current.connect(audioContextRef.current.destination);
         } catch (e) {
-          console.warn("Source already connected");
+          console.warn("Source already connected in handlePlay");
         }
       }
 
-      await audioRef.current.play();
+      const playPromise = audioRef.current.play();
+      if (playPromise !== undefined) {
+         await playPromise.catch(e => console.warn("play interrupted", e));
+      }
       setIsPlaying(true);
       
       if (audioContextRef.current) {
@@ -1139,14 +1144,26 @@ jobs:
     const audio = audioRef.current;
     if (!audio) return;
     
-    const audioCtx = new AudioContext();
+    if (!audioContextRef.current) {
+        audioContextRef.current = new (window.AudioContext || (window as any).webkitAudioContext)();
+    }
+    const audioCtx = audioContextRef.current;
     if (audioCtx.state === 'suspended') await audioCtx.resume();
-    const source = audioCtx.createMediaElementSource(audio);
-    const dest = audioCtx.createMediaStreamDestination();
-    source.connect(dest);
-    source.connect(audioCtx.destination);
     
-    dest.stream.getAudioTracks().forEach(track => stream.addTrack(track));
+    if (!sourceNodeRef.current) {
+        try {
+            sourceNodeRef.current = audioCtx.createMediaElementSource(audio);
+        } catch (e) {
+            console.warn("Failed to create media element source in record:", e);
+        }
+    }
+    const source = sourceNodeRef.current;
+    if (source) {
+       const dest = audioCtx.createMediaStreamDestination();
+       source.connect(dest);
+       source.connect(audioCtx.destination);
+       dest.stream.getAudioTracks().forEach(track => stream.addTrack(track));
+    }
 
     let mimeType = 'video/webm;codecs=vp9,opus';
     if (!MediaRecorder.isTypeSupported(mimeType)) {
@@ -1231,13 +1248,20 @@ jobs:
       handlePlay();
     }, 500); // Slight delay to ensure recorder is ready
     
+    let stuckCount = 0;
+    let expectedDuration = scenes.length > 0 ? scenes[scenes.length - 1].timestamp + 5 : 60;
+    
     const checkEnd = setInterval(() => {
-      if (audio.ended || audio.currentTime >= audio.duration - 0.05) {
+      // Sometimes audio.ended is not reliable or currentTime gets stuck near the end
+      if (audio.ended || audio.currentTime >= (audio.duration || expectedDuration) - 0.1 || stuckCount > (expectedDuration * 10 + 50)) {
         clearInterval(checkEnd);
-        recorder.stop();
+        if (recorder.state !== 'inactive') {
+            recorder.stop();
+        }
         handlePause();
         console.log("Recording stopped at end of audio.");
       }
+      stuckCount++;
     }, 100);
   };
 
