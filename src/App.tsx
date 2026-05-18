@@ -139,6 +139,19 @@ const VOICES = [
 ];
 
 export default function App() {
+  // Base state
+  const [script, setScript] = useState('');
+  const [originalScript, setOriginalScript] = useState('');
+  const [apiKeysInputText, setApiKeysInputText] = useState('');
+  const [imageUrlsInputText, setImageUrlsInputText] = useState('');
+  const [saveStatus, setSaveStatus] = useState<{ type: 'idle' | 'saving' | 'success' | 'error', message: string }>({ type: 'idle', message: '' });
+  const [selectedVoice, setSelectedVoice] = useState('Charon');
+  const [isGenerating, setIsGenerating] = useState(false);
+  const [regeneratingIdx, setRegeneratingIdx] = useState<number | null>(null);
+  const [progress, setProgress] = useState(0);
+  const [status, setStatus] = useState('');
+  const [error, setError] = useState<string | null>(null);
+
   // GitHub Auth & Settings State
   const [user, setUser] = useState<any | null>(null);
   const [githubToken, setGithubToken] = useState<string | null>(null);
@@ -147,6 +160,7 @@ export default function App() {
   const [apiKeys, setApiKeys] = useState<string[]>([]);
   const [imageUrls, setImageUrls] = useState<string[]>([]);
   const [dbProjects, setDbProjects] = useState<Project[]>([]);
+  const [autoGen, setAutoGen] = useState(false);
   const [selectedProjectId, setSelectedProjectId] = useState<string | null>(() => {
     if (typeof window !== 'undefined') {
       const params = new URLSearchParams(window.location.search);
@@ -155,12 +169,24 @@ export default function App() {
         if (params.get('render') === 'true') {
           (window as any).isHeadless = true;
         }
+        if (params.get('autoGen') === 'true') {
+          (window as any).isHeadless = true; // Auto generation happens entirely in headless typically
+        }
         return pId;
       }
       return localStorage.getItem('lastProjectId');
     }
     return null;
   });
+
+  useEffect(() => {
+    if (typeof window !== 'undefined') {
+      const params = new URLSearchParams(window.location.search);
+      if (params.get('autoGen') === 'true') {
+        setAutoGen(true);
+      }
+    }
+  }, []);
 
   useEffect(() => {
     if (selectedProjectId) {
@@ -184,7 +210,16 @@ export default function App() {
     setIsSidebarOpen(window.innerWidth >= 1024);
   }, []);
 
-  const [isLoadingProject, setIsLoadingProject] = useState(false);
+  // Auto Generation flow from Github action
+  useEffect(() => {
+    if (autoGen && script && !isGenerating && originalScript === script) {
+      // Small timeout to allow DOM to settle
+      setTimeout(() => {
+        generateFullVideo(script);
+      }, 1000);
+      setAutoGen(false); // only run once
+    }
+  }, [autoGen, script, isGenerating, originalScript]);
 
   useEffect(() => {
     if (selectedProjectId && githubToken && user) {
@@ -210,48 +245,61 @@ export default function App() {
               owner, repo, path: `projects/${selectedProjectId}/metadata.json`
             }) as any;
             metadata = JSON.parse(decodeURIComponent(escape(atob(metaContent.content))));
+            
+            if (metadata?.remoteGenerate && (window as any).isHeadless) {
+              if (metadata.keys && metadata.keys.length > 0) setApiKeys(metadata.keys);
+              if (metadata.workers && metadata.workers.length > 0) setImageUrls(metadata.workers);
+            }
           } catch (e) {
             console.log("No metadata.json found, falling back to timeline parsing");
           }
 
           // Fetch timeline
-          const { data: timelineContent } = await octokit.repos.getContent({
-            owner, repo, path: `projects/${selectedProjectId}/timeline.txt`
-          }) as any;
-          const timelineLines = decodeURIComponent(escape(atob(timelineContent.content))).split('\n');
-          
-          // Reconstruct scenes
-          const reconstructedScenes: Scene[] = [];
-          let currentTimestamp = 0;
-          let sceneIdx = 0;
-          for (let i = 0; i < timelineLines.length; i++) {
-            const line = timelineLines[i];
-            if (line.startsWith('file ')) {
-              const imgPath = line.replace('file ', '').replace(/'/g, '');
-              const { data: imgData } = await octokit.repos.getContent({
-                owner, repo, path: `projects/${selectedProjectId}/${imgPath}`
-              }) as any;
-              
-              const durationLine = timelineLines[i+1];
-              const duration = durationLine?.startsWith('duration ') ? parseFloat(durationLine.replace('duration ', '')) : 5;
-              
-              reconstructedScenes.push({
-                timestamp: currentTimestamp,
-                prompt: metadata?.scenes[sceneIdx]?.prompt || `Scene ${sceneIdx + 1}`,
-                text: metadata?.scenes[sceneIdx]?.text || "...",
-                imageUrl: `data:image/webp;base64,${imgData.content.replace(/\s/g, '')}`
-              });
-              currentTimestamp += duration;
-              sceneIdx++;
-              i++; // Skip duration line
+          try {
+            const { data: timelineContent } = await octokit.repos.getContent({
+              owner, repo, path: `projects/${selectedProjectId}/timeline.txt`
+            }) as any;
+            const timelineLines = decodeURIComponent(escape(atob(timelineContent.content))).split('\n');
+            
+            // Reconstruct scenes
+            const reconstructedScenes: Scene[] = [];
+            let currentTimestamp = 0;
+            let sceneIdx = 0;
+            for (let i = 0; i < timelineLines.length; i++) {
+              const line = timelineLines[i];
+              if (line.startsWith('file ')) {
+                const imgPath = line.replace('file ', '').replace(/'/g, '');
+                const { data: imgData } = await octokit.repos.getContent({
+                  owner, repo, path: `projects/${selectedProjectId}/${imgPath}`
+                }) as any;
+                
+                const durationLine = timelineLines[i+1];
+                const duration = durationLine?.startsWith('duration ') ? parseFloat(durationLine.replace('duration ', '')) : 5;
+                
+                reconstructedScenes.push({
+                  timestamp: currentTimestamp,
+                  prompt: metadata?.scenes?.[sceneIdx]?.prompt || `Scene ${sceneIdx + 1}`,
+                  text: metadata?.scenes?.[sceneIdx]?.text || "...",
+                  imageUrl: `data:image/webp;base64,${imgData.content.replace(/\s/g, '')}`
+                });
+                currentTimestamp += duration;
+                sceneIdx++;
+                i++; // Skip duration line
+              }
             }
+            setScenes(reconstructedScenes);
+          } catch(e: any) {
+            console.log("No timeline.txt found, skipping timeline reconstruction.");
           }
-          setScenes(reconstructedScenes);
           
-          const { data: audioData } = await octokit.repos.getContent({
-            owner, repo, path: `projects/${selectedProjectId}/audio.wav`
-          }) as any;
-          setAudioUrl(`data:audio/wav;base64,${audioData.content.replace(/\s/g, '')}`);
+          try {
+            const { data: audioData } = await octokit.repos.getContent({
+              owner, repo, path: `projects/${selectedProjectId}/audio.wav`
+            }) as any;
+            setAudioUrl(`data:audio/wav;base64,${audioData.content.replace(/\s/g, '')}`);
+          } catch(e: any) {
+            console.log("No audio.wav found");
+          }
 
         } catch (error) {
           console.error("Failed to load project details:", error);
@@ -266,18 +314,6 @@ export default function App() {
 
   const [showVoiceSelector, setShowVoiceSelector] = useState(false);
 
-  // Base state
-  const [script, setScript] = useState('');
-  const [originalScript, setOriginalScript] = useState('');
-  const [apiKeysInputText, setApiKeysInputText] = useState('');
-  const [imageUrlsInputText, setImageUrlsInputText] = useState('');
-  const [saveStatus, setSaveStatus] = useState<{ type: 'idle' | 'saving' | 'success' | 'error', message: string }>({ type: 'idle', message: '' });
-  const [selectedVoice, setSelectedVoice] = useState('Charon');
-  const [isGenerating, setIsGenerating] = useState(false);
-  const [regeneratingIdx, setRegeneratingIdx] = useState<number | null>(null);
-  const [progress, setProgress] = useState(0);
-  const [status, setStatus] = useState('');
-  const [error, setError] = useState<string | null>(null);
   
   const blobToBase64 = async (blob: Blob): Promise<string> => {
     const arrayBuffer = await blob.arrayBuffer();
@@ -289,6 +325,186 @@ export default function App() {
     return btoa(binary);
   };
 
+  const uploadRawProjectToGitHub = async (
+    octokit: Octokit,
+    userLogin: string,
+    timestamp: string,
+    scriptText: string,
+    keys: string[],
+    workers: string[]
+  ) => {
+    const owner = userLogin;
+    const repo = 'ai-studio-video-projects';
+    
+    try {
+      await octokit.repos.get({ owner, repo });
+    } catch (e: any) {
+      if (e.status === 404) {
+        await octokit.repos.createForAuthenticatedUser({
+          name: repo,
+          description: 'Projects generated by AI Studio. Rendered automatically via Actions.',
+          private: true,
+          auto_init: true
+        });
+        await sleep(3000);
+      } else {
+        throw e;
+      }
+    }
+
+    const { data: ref } = await octokit.git.getRef({ owner, repo, ref: 'heads/main' }).catch(() => ({ data: { object: { sha: '' } } }));
+    let baseTreeSha = '';
+    let refSha = ref?.object?.sha;
+    if (refSha) {
+      const { data: commit } = await octokit.git.getCommit({ owner, repo, commit_sha: refSha });
+      baseTreeSha = commit.tree.sha;
+    }
+
+    const treeData: any[] = [];
+    const scriptBase64 = btoa(unescape(encodeURIComponent(scriptText)));
+    const { data: scriptBlob } = await octokit.git.createBlob({ owner, repo, content: scriptBase64, encoding: 'base64' });
+    treeData.push({ path: `projects/${timestamp}/script.txt`, mode: '100644', type: 'blob', sha: scriptBlob.sha });
+    
+    // Pass API keys securely to the headless browser via metadata so it can run the generation
+    const metaDataString = JSON.stringify({ keys, workers, remoteGenerate: true });
+    const metaBase64 = btoa(unescape(encodeURIComponent(metaDataString)));
+    const { data: metaBlob } = await octokit.git.createBlob({ owner, repo, content: metaBase64, encoding: 'base64' });
+    treeData.push({ path: `projects/${timestamp}/metadata.json`, mode: '100644', type: 'blob', sha: metaBlob.sha });
+
+    const workflowContent = `name: Render Video
+
+on:
+  push:
+    paths:
+      - 'projects/**/script.txt'
+      - 'projects/**/timeline.txt'
+  workflow_dispatch:
+    inputs:
+      project_id:
+        description: 'Project ID to render'
+        required: true
+
+permissions:
+  contents: write
+
+jobs:
+  render:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
+      
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          
+      - name: Install Puppeteer and FFmpeg
+        run: |
+          npm install puppeteer
+          sudo apt-get update && sudo apt-get install -y ffmpeg
+        
+      - name: Render Video with Puppeteer
+        env:
+          GITHUB_TOKEN: \${{ secrets.GITHUB_TOKEN }}
+          APP_URL: ${window.location.href.split('?')[0].replace(/\/$/, '')}/
+        run: |
+          cat << 'EOF' > render.js
+          const puppeteer = require('puppeteer');
+          const fs = require('fs');
+          
+          async function run() {
+            const projId = process.argv[2];
+            const appUrl = process.argv[3];
+            const autoGen = process.argv[4] === 'true'; // flag to decide query param
+            const token = process['env']['GITHUB_TOKEN'];
+            
+            const browser = await puppeteer.launch({
+              headless: "new",
+              args: ['--no-sandbox', '--disable-web-security', '--autoplay-policy=no-user-gesture-required', '--use-gl=egl', '--window-size=1080,1920']
+            });
+            
+            const page = await browser.newPage();
+            
+            const client = await page.target().createCDPSession();
+            await client.send('Page.setDownloadBehavior', { behavior: 'allow', downloadPath: process.cwd() });
+            
+            await page.setViewport({ width: 1080, height: 1920, deviceScaleFactor: 1 });
+            
+            await page.evaluateOnNewDocument((ghToken) => {
+              localStorage.setItem('GITHUB_TOKEN', ghToken);
+              window.isHeadless = true;
+            }, token);
+            
+            const url = \`\${appUrl}?projectId=\${projId}&\${autoGen ? 'autoGen=true' : 'render=true'}\`;
+            console.log(\`Navigating to \${url}\`);
+            
+            await page.goto(url, { waitUntil: 'networkidle0', timeout: 120000 });
+            
+            console.log("Waiting for generation and render to finish. Generative steps can take ~10 minutes...");
+            await page.waitForFunction('!!window._renderComplete', { timeout: 45 * 60 * 1000 });
+            
+            console.log("Render complete on frontend! Waiting for download...");
+            
+            const checkFile = () => new Promise(r => {
+              const iv = setInterval(() => {
+                if (fs.existsSync('preview.webm')) {
+                  clearInterval(iv);
+                  setTimeout(r, 2000); 
+                }
+              }, 1000);
+            });
+            
+            await checkFile();
+            await browser.close();
+          }
+          run().catch(e => { console.error(e); process.exit(1); });
+          EOF
+          
+          CHANGED_FILES=$(git diff-tree --no-commit-id --name-only -r \${{ github.sha }} || echo "")
+          PROJECT_ID="\${{ github.event.inputs.project_id }}"
+          IS_AUTOGEN="false"
+          
+          if [ -z "$PROJECT_ID" ]; then
+            for path in $(echo "$CHANGED_FILES" | grep 'script.txt\|timeline.txt' || true); do
+              if [ -f "$path" ]; then
+                PROJECT_ID=$(basename $(dirname "$path"))
+                if [[ "$path" == *"script.txt"* ]]; then
+                  IS_AUTOGEN="true"
+                fi
+                break
+              fi
+            done
+          fi
+          
+          if [ ! -z "$PROJECT_ID" ]; then
+            echo "Running headless with Project $PROJECT_ID | AutoGen: $IS_AUTOGEN"
+            node render.js "$PROJECT_ID" "\${{ env.APP_URL }}" "$IS_AUTOGEN"
+            
+            if [ -f preview.webm ]; then
+              echo "Converting WebM to MP4..."
+              ffmpeg -i preview.webm -c:v libx264 -preset slow -crf 18 -c:a aac -b:a 192k output.mp4
+              gh release create "vid-\${PROJECT_ID}" output.mp4 --title "Video \${PROJECT_ID}" --notes "Rendered MP4 background generation via Headless Browser Action" || true
+            else
+              echo "Error: preview.webm not found"
+              exit 1
+            fi
+          fi
+`;
+    const workflowBase64 = btoa(encodeURIComponent(workflowContent).replace(/%([0-9A-F]{2})/g, (m, p1) => String.fromCharCode(parseInt(p1, 16))));
+    const { data: workflowBlob } = await octokit.git.createBlob({ owner, repo, content: workflowBase64, encoding: 'base64' });
+    treeData.push({ path: `.github/workflows/render.yml`, mode: '100644', type: 'blob', sha: workflowBlob.sha });
+
+    const treeParams: any = { owner, repo, tree: treeData };
+    if (baseTreeSha) treeParams.base_tree = baseTreeSha;
+    const { data: newTree } = await octokit.git.createTree(treeParams);
+    const commitParams: any = { owner, repo, message: `Auto-generate video project ${timestamp}`, tree: newTree.sha };
+    if (refSha) commitParams.parents = [refSha];
+    const { data: newCommit } = await octokit.git.createCommit(commitParams);
+    await octokit.git.updateRef({ owner, repo, ref: 'heads/main', sha: newCommit.sha });
+  };
+  
   const uploadProjectToGitHub = async (
     octokit: Octokit,
     userLogin: string,
@@ -422,16 +638,17 @@ jobs:
       - name: Render Video with Puppeteer
         env:
           GITHUB_TOKEN: \${{ secrets.GITHUB_TOKEN }}
-          REPO_NAME: \${{ github.event.repository.name }}
+          APP_URL: ${window.location.href.split('?')[0].replace(/\/$/, '')}/
         run: |
           cat << 'EOF' > render.js
           const puppeteer = require('puppeteer');
           const fs = require('fs');
           
           async function run() {
-            const projectId = process.argv[2];
-            const owner = process.argv[3];
-            const token = process.env.GITHUB_TOKEN;
+            // Use global object to avoid Vite crashing or altering process.env
+            const projId = process.argv[2];
+            const appUrl = process.argv[3];
+            const token = process['env']['GITHUB_TOKEN'];
             
             const browser = await puppeteer.launch({
               headless: "new",
@@ -454,7 +671,8 @@ jobs:
               window.isHeadless = true;
             }, token);
             
-            const url = \`https://\${owner}.github.io/\${process.env.REPO_NAME}/?projectId=\${projectId}&render=true\`;
+            // Clean up appUrl logic
+            const url = \`\${appUrl}?projectId=\${projId}&render=true\`;
             console.log(\`Navigating to \${url}\`);
             
             await page.goto(url, { waitUntil: 'networkidle0', timeout: 120000 });
@@ -493,7 +711,7 @@ jobs:
           
           if [ ! -z "$PROJECT_ID" ]; then
             echo "Rendering project $PROJECT_ID"
-            node render.js "$PROJECT_ID" "\${{ github.repository_owner }}"
+            node render.js "$PROJECT_ID" "\${{ env.APP_URL }}"
             
             if [ -f preview.webm ]; then
               echo "Converting WebM to MP4..."
@@ -2220,10 +2438,35 @@ jobs:
                       onClick={() => generateFullVideo()}
                       disabled={isGenerating || !script.trim()}
                       className="shrink-0 h-[36px] w-[36px] bg-orange-500 hover:bg-orange-600 text-black rounded-lg flex items-center justify-center shadow-lg shadow-orange-500/20 transition-all disabled:opacity-30 disabled:scale-100 active:scale-95"
-                      title="Generate Video"
+                      title="Generate Video (Browser)"
                     >
                       {isGenerating ? <Loader2 size={16} className="animate-spin" /> : <Zap size={16} fill="currentColor" />}
                     </button>
+                    {githubToken && user && (
+                      <button
+                        onClick={async () => {
+                          if (!script.trim()) return;
+                          setIsGenerating(true);
+                          setStatus('Triggering Background Generation...');
+                          try {
+                            const workers = imageUrls.length ? imageUrls : [];
+                            const keys = apiKeys.length ? apiKeys : [];
+                            const o = new Octokit({ auth: githubToken });
+                            await uploadRawProjectToGitHub(o, user.login, Date.now().toString(), script, keys, workers);
+                            setStatus('Background generation started! You can safely close the browser. Your video will appear in GitHub releases!');
+                            setScript('');
+                          } catch(e: any) {
+                            setStatus('Error sending to background: ' + e.message);
+                          }
+                          setIsGenerating(false);
+                        }}
+                        disabled={isGenerating || !script.trim()}
+                        className="shrink-0 h-[36px] w-[36px] bg-indigo-600 hover:bg-indigo-500 text-white rounded-lg flex items-center justify-center shadow-lg shadow-indigo-500/20 transition-all disabled:opacity-30 disabled:scale-100 active:scale-95"
+                        title="Generate in Background (GitHub Actions)"
+                      >
+                        {isGenerating ? <Loader2 size={16} className="animate-spin" /> : <RefreshCw size={16} />}
+                      </button>
+                    )}
                   </div>
               </div>
             </motion.div>
