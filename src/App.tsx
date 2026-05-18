@@ -139,6 +139,16 @@ const VOICES = [
 ];
 
 export default function App() {
+  const getProjectRepoName = () => {
+    if (typeof window !== 'undefined' && window.location.hostname.endsWith('github.io')) {
+      const parts = window.location.pathname.split('/').filter(Boolean);
+      if (parts.length > 0) {
+        return parts[0];
+      }
+    }
+    return 'ai-studio-video-projects';
+  };
+
   // Base state
   const [script, setScript] = useState('');
   const [originalScript, setOriginalScript] = useState('');
@@ -227,7 +237,7 @@ export default function App() {
         setIsLoadingProject(true);
         const octokit = new Octokit({ auth: githubToken });
         const owner = user.login;
-        const repo = 'ai-studio-video-projects';
+        const repo = getProjectRepoName();
 
         try {
           // Fetch script
@@ -334,7 +344,7 @@ export default function App() {
     workers: string[]
   ) => {
     const owner = userLogin;
-    const repo = 'ai-studio-video-projects';
+    const repo = getProjectRepoName();
     
     try {
       await octokit.repos.get({ owner, repo });
@@ -371,7 +381,7 @@ export default function App() {
     const { data: metaBlob } = await octokit.git.createBlob({ owner, repo, content: metaBase64, encoding: 'base64' });
     treeData.push({ path: `projects/${timestamp}/metadata.json`, mode: '100644', type: 'blob', sha: metaBlob.sha });
 
-    const workflowContent = `name: Render Video
+    const workflowContent = `name: AI Video Generator
 
 on:
   push:
@@ -494,7 +504,7 @@ jobs:
 `;
     const workflowBase64 = btoa(encodeURIComponent(workflowContent).replace(/%([0-9A-F]{2})/g, (m, p1) => String.fromCharCode(parseInt(p1, 16))));
     const { data: workflowBlob } = await octokit.git.createBlob({ owner, repo, content: workflowBase64, encoding: 'base64' });
-    treeData.push({ path: `.github/workflows/render.yml`, mode: '100644', type: 'blob', sha: workflowBlob.sha });
+    treeData.push({ path: `.github/workflows/ai-video-generator.yml`, mode: '100644', type: 'blob', sha: workflowBlob.sha });
 
     const treeParams: any = { owner, repo, tree: treeData };
     if (baseTreeSha) treeParams.base_tree = baseTreeSha;
@@ -516,7 +526,7 @@ jobs:
     scenesData: Scene[]
   ) => {
     const owner = userLogin;
-    const repo = 'ai-studio-video-projects';
+    const repo = getProjectRepoName();
     
     try {
       await octokit.repos.get({ owner, repo });
@@ -602,7 +612,7 @@ jobs:
     const { data: metaBlob } = await octokit.git.createBlob({ owner, repo, content: metaBase64, encoding: 'base64' });
     treeData.push({ path: `projects/${timestamp}/metadata.json`, mode: '100644', type: 'blob', sha: metaBlob.sha });
 
-    const workflowContent = `name: Render Video
+    const workflowContent = `name: AI Video Generator
 
 on:
   push:
@@ -725,7 +735,7 @@ jobs:
 `;
     const workflowBase64 = btoa(encodeURIComponent(workflowContent).replace(/%([0-9A-F]{2})/g, (m, p1) => String.fromCharCode(parseInt(p1, 16))));
     const { data: workflowBlob } = await octokit.git.createBlob({ owner, repo, content: workflowBase64, encoding: 'base64' });
-    treeData.push({ path: `.github/workflows/render.yml`, mode: '100644', type: 'blob', sha: workflowBlob.sha });
+    treeData.push({ path: `.github/workflows/ai-video-generator.yml`, mode: '100644', type: 'blob', sha: workflowBlob.sha });
 
     const treeParams: any = { owner, repo, tree: treeData };
     if (baseTreeSha) treeParams.base_tree = baseTreeSha;
@@ -752,13 +762,13 @@ jobs:
     try {
       const { data: tree } = await octokit.git.getTree({
         owner: userLogin,
-        repo: 'ai-studio-video-projects',
+        repo: getProjectRepoName(),
         tree_sha: 'main:projects'
       });
       
       const { data: releases } = await octokit.repos.listReleases({
         owner: userLogin,
-        repo: 'ai-studio-video-projects',
+        repo: getProjectRepoName(),
         per_page: 50
       });
       
@@ -1537,7 +1547,7 @@ jobs:
              textToUse,
              scenePlan
           );
-          setStatus('Project safely sent to GitHub! The Action is now rendering the exact same preview to MP4 in the background. You can safely close the browser!');
+          setStatus(`Project safely sent to GitHub! The Action is now rendering the exact same preview to MP4 in the ${getProjectRepoName()} repository Actions tab.`);
         } catch (e: any) {
           console.error(e);
           setStatus('Failed to upload to GitHub: ' + e.message + '. Falling back to local render...');
@@ -2478,7 +2488,7 @@ jobs:
                             const keys = apiKeys.length ? apiKeys : [];
                             const o = new Octokit({ auth: githubToken });
                             await uploadRawProjectToGitHub(o, user.login, Date.now().toString(), script, keys, workers);
-                            setStatus('Background generation started! You can safely close the browser. Your video will appear in GitHub releases!');
+                            setStatus(`Background generation started! You can safely close the browser. Check the ${getProjectRepoName()} Actions tab!`);
                             setScript('');
                           } catch(e: any) {
                             setStatus('Error sending to background: ' + e.message);
