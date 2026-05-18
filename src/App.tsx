@@ -420,7 +420,7 @@ jobs:
           GITHUB_TOKEN: \${{ secrets.GITHUB_TOKEN }}
           APP_URL: ${window.location.href.split('?')[0].replace(/\/$/, '')}/
         run: |
-          cat << 'EOF' > render.js
+          cat << 'EOF' > render.cjs
           const puppeteer = require('puppeteer');
           const fs = require('fs');
           
@@ -490,7 +490,7 @@ jobs:
           
           if [ ! -z "$PROJECT_ID" ]; then
             echo "Running headless with Project $PROJECT_ID | AutoGen: $IS_AUTOGEN"
-            node render.js "$PROJECT_ID" "\${{ env.APP_URL }}" "$IS_AUTOGEN"
+            node render.cjs "$PROJECT_ID" "\${{ env.APP_URL }}" "$IS_AUTOGEN"
             
             if [ -f preview.webm ]; then
               echo "Converting WebM to MP4..."
@@ -650,7 +650,7 @@ jobs:
           GITHUB_TOKEN: \${{ secrets.GITHUB_TOKEN }}
           APP_URL: ${window.location.href.split('?')[0].replace(/\/$/, '')}/
         run: |
-          cat << 'EOF' > render.js
+          cat << 'EOF' > render.cjs
           const puppeteer = require('puppeteer');
           const fs = require('fs');
           
@@ -721,7 +721,7 @@ jobs:
           
           if [ ! -z "$PROJECT_ID" ]; then
             echo "Rendering project $PROJECT_ID"
-            node render.js "$PROJECT_ID" "\${{ env.APP_URL }}"
+            node render.cjs "$PROJECT_ID" "\${{ env.APP_URL }}"
             
             if [ -f preview.webm ]; then
               echo "Converting WebM to MP4..."
