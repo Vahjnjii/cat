@@ -422,6 +422,7 @@ jobs:
       - name: Render Video with Puppeteer
         env:
           GITHUB_TOKEN: \${{ secrets.GITHUB_TOKEN }}
+          REPO_NAME: \${{ github.event.repository.name }}
         run: |
           cat << 'EOF' > render.js
           const puppeteer = require('puppeteer');
@@ -453,7 +454,7 @@ jobs:
               window.isHeadless = true;
             }, token);
             
-            const url = \`https://\${owner}.github.io/video-app/?projectId=\${projectId}&render=true\`;
+            const url = \`https://\${owner}.github.io/\${process.env.REPO_NAME}/?projectId=\${projectId}&render=true\`;
             console.log(\`Navigating to \${url}\`);
             
             await page.goto(url, { waitUntil: 'networkidle0', timeout: 120000 });
