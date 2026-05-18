@@ -1109,8 +1109,11 @@ jobs:
     }
   }, [scenes, isGenerating, isPlaying, audioUrl]);
 
+  const isRecordingRef = useRef(false);
   const handleRecordVideo = async () => {
     if (!canvasRef.current || !audioUrl) return;
+    if (isRecordingRef.current) return;
+    isRecordingRef.current = true;
     
     try {
       await document.fonts.ready;
@@ -1135,8 +1138,16 @@ jobs:
     
     dest.stream.getAudioTracks().forEach(track => stream.addTrack(track));
 
+    let mimeType = 'video/webm;codecs=vp9,opus';
+    if (!MediaRecorder.isTypeSupported(mimeType)) {
+      mimeType = 'video/webm';
+      if (!MediaRecorder.isTypeSupported(mimeType)) {
+        mimeType = 'video/mp4'; // Safari fallback
+      }
+    }
+
     const recorder = new MediaRecorder(stream, {
-      mimeType: 'video/webm;codecs=vp9,opus',
+      mimeType: MediaRecorder.isTypeSupported(mimeType) ? mimeType : '',
       videoBitsPerSecond: 25000000 // 25Mbps for ultra quality
     });
 
@@ -1146,19 +1157,22 @@ jobs:
     };
 
     recorder.onstop = async () => {
-      const blob = new Blob(chunks, { type: 'video/webm' });
+      const actualMimeType = mimeType || '';
+      const ext = actualMimeType.includes('mp4') ? 'mp4' : 'webm';
+      const blob = new Blob(chunks, { type: actualMimeType });
       (window as any)._finalVideoBlob = blob;
       console.log("Final video blob ready (9:16 aspect ratio confirmed)");
       
       if ((window as any).isHeadless) {
-        console.log("In headless mode, directly downloading webm for GitHub action...");
+        console.log("In headless mode, directly downloading file for GitHub action...");
         const url = URL.createObjectURL(blob);
         const a = document.createElement("a");
         a.href = url;
-        a.download = `preview.webm`;
+        a.download = `preview.${ext}`;
         a.click();
         URL.revokeObjectURL(url);
         setStatus('Render complete! Blob downloaded.');
+        isRecordingRef.current = false;
         setTimeout(() => { (window as any)._renderComplete = true; }, 1000);
         return;
       }
@@ -1166,7 +1180,7 @@ jobs:
       setStatus('Sending to backend to render exact preview to MP4. Please wait...');
       try {
         const formData = new FormData();
-        formData.append("video", blob, "preview.webm");
+        formData.append("video", blob, `preview.${ext}`);
         
         const response = await fetch("/api/video/render", {
           method: "POST",
@@ -1188,7 +1202,16 @@ jobs:
         setStatus('Ready!');
       } catch (err: any) {
         console.error("Backend render failed:", err);
-        setStatus("Render failed: " + err.message);
+        setStatus("MP4 conversion failed, downloading WebM fallback instead...");
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement("a");
+        a.href = url;
+        a.download = `video_render_${Date.now()}.${ext}`;
+        a.click();
+        URL.revokeObjectURL(url);
+        setStatus(`Ready! (${ext.toUpperCase()} Fallback)`);
+      } finally {
+        isRecordingRef.current = false;
       }
     };
 
@@ -1484,7 +1507,7 @@ jobs:
 
       await Promise.all(imagePromises);
 
-      if (githubToken && user) {
+      if (githubToken && user && !(window as any).isHeadless) {
         setStatus('Uploading assets to GitHub to render remotely in background...');
         try {
           const octokit = new Octokit({ auth: githubToken });
@@ -1518,13 +1541,15 @@ jobs:
         } catch (e: any) {
           console.error(e);
           setStatus('Failed to upload to GitHub: ' + e.message + '. Falling back to local render...');
-          setTimeout(() => handleRecordVideo(), 500);
+          if (!(window as any).isHeadless) setTimeout(() => handleRecordVideo(), 500);
         }
       } else {
-        setStatus('No GitHub token linked. Starting local exact preview render recording... DO NOT SWITCH TABS');
-        setTimeout(() => {
-          handleRecordVideo();
-        }, 500);
+        setStatus((window as any).isHeadless ? 'Headless generation complete, handing off to renderer...' : 'Starting local exact preview render recording... DO NOT SWITCH TABS');
+        if (!(window as any).isHeadless) {
+          setTimeout(() => {
+            handleRecordVideo();
+          }, 500);
+        }
       }
       setIsGenerating(false);
       setProgress(100);
